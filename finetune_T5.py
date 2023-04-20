@@ -1,10 +1,11 @@
 import preprocess
 import torch
+import tqdm
 
 from transformers import T5Tokenizer, T5ForConditionalGeneration
 from transformers import AdamW, get_cosine_schedule_with_warmup
 
-tokenizer = T5Tokenizer.from_pretrained("t5-small")
+tokenizer = T5Tokenizer.from_pretrained("t5-large")
 
 path = "entailment_bank/data/public_dataset/entailment_trees_emnlp2021_data_v2/dataset/task_1/"
 
@@ -33,27 +34,42 @@ def finetune_T5(model, dataset_train, dataset_validation, batch_size, num_epoche
                                   {'params': [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
                                    'weight_decay': 0.}]
     optimizer = AdamW(optimizer_grouped_parameters, lr=1e-4)
-    schdeuler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=50, num_training_steps=1000)
+    schdeuler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=1000, num_training_steps=100000)
+
+    # eval the model on validation set
+    val_loss_total = 0.0
+    model.eval()
+    with torch.no_grad():
+        for input_ids, attention_mask, output_ids in tqdm.tqdm(dataloader_validation):
+            input_ids = input_ids.to(device)
+            attention_mask = attention_mask.to(device)
+            output_ids = output_ids.to(device)
+
+            val_loss_batch_average = model(input_ids=input_ids, attention_mask=attention_mask, labels=output_ids).loss
+
+            val_loss_total += (val_loss_batch_average.item() * batch_size)
+    
+    val_loss_average = val_loss_total / len(dataloader_validation.dataset)
+    print("initial loss", val_loss_average)
 
     for epoch in range(num_epoches):
         # train the model
         model.train()
         loss_total = 0.0
-        for input_ids, attention_mask, output_ids in dataloader_train:
+        for input_ids, attention_mask, output_ids in tqdm.tqdm(dataloader_train):
             input_ids = input_ids.to(device)
             attention_mask = attention_mask.to(device)
             output_ids = output_ids.to(device)
 
-            loss_batch_total = model(input_ids=input_ids, attention_mask=attention_mask, labels=output_ids).loss
+            loss_batch_avg = model(input_ids=input_ids, attention_mask=attention_mask, labels=output_ids).loss
             
-            loss_batch_avg = loss_batch_total / input_ids.size(0)
             loss_batch_avg.backward()
 
             optimizer.step()
             schdeuler.step()
             optimizer.zero_grad()
 
-            loss_total += loss_batch_total.item()
+            loss_total += (loss_batch_avg.item() * batch_size)
 
         loss_average = loss_total / len(dataloader_train.dataset)
 
@@ -61,24 +77,26 @@ def finetune_T5(model, dataset_train, dataset_validation, batch_size, num_epoche
         val_loss_total = 0.0
         model.eval()
         with torch.no_grad():
-            for input_ids, attention_mask, output_ids in dataloader_validation:
+            for input_ids, attention_mask, output_ids in tqdm.tqdm(dataloader_validation):
                 input_ids = input_ids.to(device)
                 attention_mask = attention_mask.to(device)
                 output_ids = output_ids.to(device)
 
-                val_loss_batch_total = model(input_ids=input_ids, attention_mask=attention_mask, labels=output_ids).loss
+                val_loss_batch_average = model(input_ids=input_ids, attention_mask=attention_mask, labels=output_ids).loss
 
-                val_loss_total += val_loss_batch_total.item()
+                val_loss_total += (val_loss_batch_average.item() * batch_size)
         
         val_loss_average = val_loss_total / len(dataloader_validation.dataset)
 
         # print result for this epoch
         print("Epoch {:3d} | train avg loss {:8.4f} | val avg loss {:8.4f}".format(epoch, loss_average, val_loss_average))
 
+        model.save_pretrained(f"saved_model/T5_large_epoch_{epoch}")
+
 if __name__ == "__main__":
-    model = T5ForConditionalGeneration.from_pretrained('t5-small')
+    model = T5ForConditionalGeneration.from_pretrained('t5-large')
     dataset_train = preprocess.entailment_bank_dataset(path + "train.jsonl")
     dataset_validation = preprocess.entailment_bank_dataset(path + "dev.jsonl")
     
-    finetune_T5(model, dataset_train, dataset_validation, batch_size=32, num_epoches=3, device='cpu')
+    finetune_T5(model, dataset_train, dataset_validation, batch_size=4, num_epoches=20, device='cuda')
     
