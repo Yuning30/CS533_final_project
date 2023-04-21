@@ -8,7 +8,7 @@ path = "entailment_bank/data/public_dataset/entailment_trees_emnlp2021_data_v2/d
 
 with open(path, "r") as f:
     lines = f.readlines()
-    one_task = json.loads(lines[0])
+    one_task = json.loads(lines[1])
 
     # for line in lines:
     #     one_task = json.loads(line)
@@ -89,17 +89,24 @@ def preprocess(file_path):
                 partial_proofs_str = "$partial_proof$ ="
                 must_list = sorted(list(info[current_node]['must']))
                 other_list = sorted(list(info[current_node]['other']))
+                include_set = set()
                 for node in must_list:
-                    partial_proofs_str += " "
-                    partial_proofs_str += proof_steps[node]
+                   include_set.add(node)
                 
                 for node in other_list:
                     a = random.choice([0, 1])
                     if a == 1:
-                        partial_proofs_str += " "
-                        partial_proofs_str += proof_steps[node]
+                        include_set.add(node)
+                        for child_node in info[node]["must"]:
+                            # resursively add child node to make partial proof valid
+                            include_set.add(child_node)
                 
-                print(must_list, other_list)
+                include_set = sorted(list(include_set))
+                for node in include_set:
+                    partial_proofs_str += " "
+                    partial_proofs_str += proof_steps[node]
+
+                print(must_list, other_list, include_set)
                 print("partial_proofs_str:", partial_proofs_str)
                 print("label_str:", label_str)
 
@@ -127,7 +134,22 @@ class entailment_bank_dataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         return self.partial_proofs[index], self.labels[index]
 
+def preprocess_for_verifier(file_path):
+    """
+        read the data file, generate positive and psudo-negative examples for verifier
+    """
+    premises_list = []
+    score_list = []
+    with open(file_path, "r") as f:
+        lines = f.readlines()
+
+        for line in lines:
+            one_task = json.loads(line)
+            print(one_task)
+            exit()
+            # sentences, inferences, int_to_all_ancestors_list, relevant_sentences, id_to_int = proof_utils.parse_entailment_step_proof(one_task["proof"], one_task, print_flag=True)
 
 if __name__ == "__main__":
-    preprocess(path)
+    # pass
+    # preprocess_for_verifier(path)
     entailment_bank_dataset(path)
