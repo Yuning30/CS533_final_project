@@ -2,13 +2,15 @@ import os
 import json
 import random
 import torch
+import rank_bm25
+import numpy as np
 
 import entailment_bank.utils.proof_utils as proof_utils
-path = "entailment_bank/data/public_dataset/entailment_trees_emnlp2021_data_v2/dataset/task_1/train.jsonl"
+path = "entailment_bank/data/public_dataset/entailment_trees_emnlp2021_data_v2/dataset/task_1/"
 
-with open(path, "r") as f:
+with open(path + "train.jsonl", "r") as f:
     lines = f.readlines()
-    one_task = json.loads(lines[1])
+    one_task = json.loads(lines[0])
 
     # for line in lines:
     #     one_task = json.loads(line)
@@ -139,6 +141,7 @@ def preprocess_for_verifier(file_path):
         read the data file, generate positive and psudo-negative examples for verifier
     """
     premises_list = []
+    conclusion_list = []
     score_list = []
     with open(file_path, "r") as f:
         lines = f.readlines()
@@ -146,10 +149,84 @@ def preprocess_for_verifier(file_path):
         for line in lines:
             one_task = json.loads(line)
             print(one_task)
-            exit()
-            # sentences, inferences, int_to_all_ancestors_list, relevant_sentences, id_to_int = proof_utils.parse_entailment_step_proof(one_task["proof"], one_task, print_flag=True)
+            sentences, inferences, int_to_all_ancestors_list, relevant_sentences, id_to_int = proof_utils.parse_entailment_step_proof(one_task["proof"], one_task, print_flag=True)
+
+            # first, construct the mapping from sent{x}, int{x} or hypothesis to the corresponding string
+            corpus = []
+            str_map = {}
+            for sent_x, sent_str in one_task["meta"]["triples"].items():
+                str_map[sent_x] = sent_str
+                corpus.append(sent_str)
+            
+            for step in inferences:
+                int_x = step["rhs"]
+                str_map[int_x] = id_to_int[int_x]
+
+            # build corpus for negative examples
+            tokenized_corpus = [x.split(" ") for x in corpus]
+            bm25 = rank_bm25.BM25Okapi(tokenized_corpus)
+
+            # second, for each proof step, construct valid step and invalid step in string format
+            for step in inferences:
+                # valid step
+                premises = [str_map[premise] for premise in step["lhs"]]
+                shuffled_premises = premises.copy()
+                random.shuffle(shuffled_premises)
+                premises_list.append(". ".join(shuffled_premises))
+                conclusion_list.append(str_map[step["rhs"]])
+                score_list.append(1.0)
+
+                # invalid step by removing one premise
+                deleted_premises = shuffled_premises.copy()
+                deleted_premises.pop(random.randint(0, len(deleted_premises) - 1))
+                premises_list.append(". ".join(deleted_premises))
+                conclusion_list.append(str_map[step["rhs"]])
+                score_list.append(0.0)
+
+                # invalid step by changing one premise with a similar one from context using BM25 algorithm
+                changed_premises = premises.copy()
+                query_idx = random.randint(0, len(changed_premises) - 1)
+                query = changed_premises[query_idx]
+                tokenized_query = query.split(" ")
+
+                # find the most similar one but not the query itself
+                doc_scores = bm25.get_scores(tokenized_query)
+                reverse_order = np.argsort(doc_scores)
+                similar_sent = corpus[reverse_order[-1]] if corpus[reverse_order[-1]] != query else corpus[reverse_order[-2]]
+                assert (similar_sent != query)
+
+                if similar_sent not in set(changed_premises):
+                    changed_premises[query_idx] = similar_sent
+
+                    premises_list.append(". ".join(changed_premises))
+                    conclusion_list.append(str_map[step["rhs"]])
+                    score_list.append(0.0)
+                    print("changed premises added")
+
+                # copy one premise as the result
+                premises_list.append(". ".join(premises))
+                conclusion_list.append(random.choice(premises))
+                score_list.append(0.0)
+
+    return premises_list, conclusion_list, score_list
+                
+class roberta_dataset(torch.utils.data.Dataset):
+    def __init__(self, file_path):
+        self.premises_list, self.conclusion_list, self.score_list = preprocess_for_verifier(file_path)
+        assert (len(self.premises_list) == len(self.score_list))
+        assert (len(self.conclusion_list) == len(self.score_list))
+
+    def __len__(self):
+        return len(self.score_list)
+    
+    def __getitem__(self, index):
+        return self.premises_list[index], self.conclusion_list[index], self.score_list[index]
 
 if __name__ == "__main__":
     # pass
-    # preprocess_for_verifier(path)
-    entailment_bank_dataset(path)
+    _, _, score_list = preprocess_for_verifier(path + "train.jsonl")
+    print("score list length", len(score_list))
+
+    _, _, score_list = preprocess_for_verifier(path + "dev.jsonl")
+    print("score list length", len(score_list))
+    # entailment_bank_dataset(path)
