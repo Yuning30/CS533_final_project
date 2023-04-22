@@ -41,7 +41,10 @@ def finetune_roberta(model, dataset_train, dataset_validation, batch_size, num_e
             attention_mask = attention_mask.to(device)
             scores = scores.to(device)
 
-            val_loss_batch_average = model(input_ids=input_ids, attention_mask=attention_mask, labels=scores).loss
+            logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
+            predicted_scores = torch.sigmoid(logits).squeeze()
+
+            val_loss_batch_average = torch.nn.MSELoss()(predicted_scores, scores)
 
             val_loss_total += (val_loss_batch_average.item() * batch_size)
     
@@ -57,7 +60,10 @@ def finetune_roberta(model, dataset_train, dataset_validation, batch_size, num_e
             attention_mask = attention_mask.to(device)
             scores = scores.to(device)
 
-            loss_batch_avg = model(input_ids=input_ids, attention_mask=attention_mask, labels=scores).loss
+            logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
+            predicted_scores = torch.sigmoid(logits).squeeze()
+
+            loss_batch_avg = torch.nn.MSELoss()(predicted_scores, scores)
             
             loss_batch_avg.backward()
 
@@ -78,7 +84,10 @@ def finetune_roberta(model, dataset_train, dataset_validation, batch_size, num_e
                 attention_mask = attention_mask.to(device)
                 scores = scores.to(device)
 
-                val_loss_batch_average = model(input_ids=input_ids, attention_mask=attention_mask, labels=scores).loss
+                logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
+                predicted_scores = torch.sigmoid(logits).squeeze()
+
+                val_loss_batch_average = torch.nn.MSELoss()(predicted_scores, scores)
 
                 val_loss_total += (val_loss_batch_average.item() * batch_size)
         
@@ -87,12 +96,12 @@ def finetune_roberta(model, dataset_train, dataset_validation, batch_size, num_e
         # print result for this epoch
         print("Epoch {:3d} | train avg loss {:8.4f} | val avg loss {:8.4f}".format(epoch, loss_average, val_loss_average))
 
-        model.save_pretrained(f"saved_model/T5_large_epoch_{epoch}")
+        model.save_pretrained(f"saved_model/roberta_base_epoch_{epoch}")
 
 if __name__ == "__main__":
     model = RobertaForSequenceClassification.from_pretrained('roberta-base', problem_type='regression', num_labels=1)
     dataset_train = preprocess.roberta_dataset(path + "train.jsonl")
     dataset_validation = preprocess.roberta_dataset(path + "dev.jsonl")
     
-    finetune_roberta(model, dataset_train, dataset_validation, batch_size=4, num_epoches=20, device='cpu')
+    finetune_roberta(model, dataset_train, dataset_validation, batch_size=32, num_epoches=20, device='cuda')
     
