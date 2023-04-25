@@ -5,7 +5,7 @@ import tqdm
 from transformers import RobertaTokenizer, RobertaForSequenceClassification
 from transformers import AdamW, get_cosine_schedule_with_warmup
 
-tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
+tokenizer = RobertaTokenizer.from_pretrained("roberta-large")
 
 path = "entailment_bank/data/public_dataset/entailment_trees_emnlp2021_data_v2/dataset/task_1/"
 
@@ -29,7 +29,7 @@ def finetune_roberta(model, dataset_train, dataset_validation, batch_size, num_e
                                    'weight_decay': 0.01},
                                   {'params': [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
                                    'weight_decay': 0.}]
-    optimizer = AdamW(optimizer_grouped_parameters, lr=1e-4)
+    optimizer = AdamW(optimizer_grouped_parameters, lr=2e-5)
     schdeuler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=1000, num_training_steps=100000)
 
     # eval the model on validation set
@@ -96,10 +96,10 @@ def finetune_roberta(model, dataset_train, dataset_validation, batch_size, num_e
         # print result for this epoch
         print("Epoch {:3d} | train avg loss {:8.4f} | val avg loss {:8.4f}".format(epoch, loss_average, val_loss_average))
 
-        model.save_pretrained(f"saved_model/roberta_base_epoch_{epoch}")
+        model.save_pretrained(f"saved_model/roberta_large_epoch_{epoch}")
 
 if __name__ == "__main__":
-    model = RobertaForSequenceClassification.from_pretrained('roberta-base', problem_type='regression', num_labels=1)
+    model = RobertaForSequenceClassification.from_pretrained('roberta-large', problem_type='regression', num_labels=1)
     dataset_train = preprocess.roberta_dataset(path + "train.jsonl")
     dataset_validation = preprocess.roberta_dataset(path + "dev.jsonl")
     
