@@ -472,9 +472,10 @@ def eval_task(file_path, prover, verifier):
             for idx, line in enumerate(lines):
                 one_task = json.loads(line)
                 proof_str = proof_search(one_task, prover, verifier)
-                w.write(f"--------- test {idx} -----------\n")
-                w.write(f"round truth proof\t\t: {one_task['proof']}\n")
-                w.write(f"our proof\t\t: {proof_str}\n")
+                # w.write(f"--------- test {idx} -----------\n")
+                # w.write(f"round truth proof\t\t: {one_task['proof']}\n")
+                # w.write(f"our proof\t\t: {proof_str}\n")
+                w.write(f"$proof$ ={proof_str}\n")
             
 
 if __name__ == "__main__":
