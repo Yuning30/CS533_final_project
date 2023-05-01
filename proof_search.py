@@ -1,18 +1,24 @@
+import tqdm
 import torch
 import json
 import random
 import math
+import sys
 import numpy as np
 from transformers import T5Tokenizer, T5ForConditionalGeneration
 from transformers import RobertaTokenizer, RobertaForSequenceClassification
 
-random.seed(0)
+# print("recursion limit", sys.getrecursionlimit())
+# sys.setrecursionlimit(5000)
+# print("recursion limit", sys.getrecursionlimit())
+
+random.seed(1)
 path = "entailment_bank/data/public_dataset/entailment_trees_emnlp2021_data_v2/dataset/task_1/"
 
 t5_tokenizer = T5Tokenizer.from_pretrained("t5-large")
 roberta_tokenizer = RobertaTokenizer.from_pretrained("roberta-large")
 
-device = 'cuda'
+device = 'cuda:1'
 
 class Node:
     def __init__(self, type_in=None, score_in=None, sent_in=None):
@@ -25,12 +31,18 @@ class Node:
 
 def proof_search(one_task, prover, verifier):
     graph_nodes, sent_to_node_mapping = generate_greedy_and_initialize_graph(one_task, prover, verifier)
+    if graph_nodes is None:
+        return ""
     explored = set()
 
     while True:
         # import pdb
         # pdb.set_trace()
         sampled_partial_proof_str, sent_to_symbol_mapping = sample_new(one_task, graph_nodes, sent_to_node_mapping, explored)
+        if sampled_partial_proof_str is None:
+            # no new proof found in a reasonable time
+            print("EARLY TERMINATION")
+            break
         explored.add(sampled_partial_proof_str)
         print("sampled partial proof", sampled_partial_proof_str)
 
@@ -45,8 +57,8 @@ def proof_search(one_task, prover, verifier):
         print(proof_step_list)
         print(scrs)
 
-        #import pdb
-        #pdb.set_trace()
+        # import pdb
+        # pdb.set_trace()
         graph_nodes, updated = update_graph(one_task, graph_nodes, proof_step_list, scrs)
         if not updated:
             break
@@ -149,10 +161,12 @@ def update_graph(one_task, graph_nodes, proof_step_list, scrs):
                 graph_nodes.remove(old_I_node)
                 graph_nodes.append(temp_S_node)
                 graph_nodes.append(temp_I_node)
+                sent_to_node_mapping[temp_I_node.sent] = temp_I_node
 
                 score_to_change_list = []
                 for successor in temp_I_node.out_bound_edges:
                     successor.in_bound_edges.remove(old_I_node)
+                    successor.in_bound_edges.append(temp_I_node)
                     score_to_change_list.append(successor)
 
                 # propogate score update to all possible successors
@@ -235,6 +249,9 @@ def prover_generate(one_task, prover, partial_proof_str, sent_to_symbol_mapping)
     for i in range(len(outputs.sequences)):
         proof_step = t5_tokenizer.decode(outputs.sequences[i], skip_special_tokens=True)
         print("generated proof step:", proof_step)
+        if "->" not in proof_step:
+            print("invalid proof step: without ->")
+            continue
         premises, conclusion, final_step = parse_proof_step(proof_step)
 
         # # prover_score = 1
@@ -246,9 +263,27 @@ def prover_generate(one_task, prover, partial_proof_str, sent_to_symbol_mapping)
 
         try:
             premise_sents = [symbol_to_sent_mapping[symbol] for symbol in premises]
+
+            if len(premise_sents) > len(set(premise_sents)):
+                print("invalid proof step: sent/int used more than 1 time")
+                continue
+
+            if not final_step:
+                int_premises = list(filter(lambda x: x.startswith("int"), premises))
+                if conclusion[1] in [symbol_to_sent_mapping[x] for x in int_premises]:
+                    print("invalid proof step: copy int to int")
+                    continue
+
+                if conclusion[1] == one_task['hypothesis']:
+                    print("invalid proof step: output hypothesis at not final step")
+                    continue
         except:
-            print("invalid proof step")
+            # invalid proof step using some unknown symnbols
+            print("invalid proof step: use unknown symbols")
             continue
+
+        
+
         conclusion_sent = "hypothesis" if final_step else conclusion[1]
         proof_step_list.append((premise_sents, conclusion_sent, final_step))
         score_list.append(prover_score)
@@ -256,6 +291,17 @@ def prover_generate(one_task, prover, partial_proof_str, sent_to_symbol_mapping)
     return proof_step_list, score_list
 
 def sample_new(one_task, graph_nodes, sent_to_node_mapping, explored):
+    iters = 1000
+    for _ in range(iters):
+        partial_str, sent_to_symbol_mapping = sample_new_one(one_task, graph_nodes, sent_to_node_mapping)
+        if partial_str not in explored:
+            # find a new partial proof
+            return partial_str, sent_to_symbol_mapping
+
+    return None, None
+
+
+def sample_new_one(one_task, graph_nodes, sent_to_node_mapping):
     # filter out the I nodes
     I_nodes = []
     for node in graph_nodes:
@@ -332,9 +378,6 @@ def sample_new(one_task, graph_nodes, sent_to_node_mapping, explored):
 
         sent_to_symbol_mapping[node.sent] = symbol
 
-
-    if partial_str in explored:
-        return sample_new(one_task, graph_nodes, sent_to_node_mapping, explored)
     return partial_str, sent_to_symbol_mapping
 
 def generate_greedy_and_initialize_graph(one_task, prover, verifier):
@@ -376,19 +419,72 @@ def generate_greedy_and_initialize_graph(one_task, prover, verifier):
         proof_step = t5_tokenizer.decode(outputs.sequences[0], skip_special_tokens=True)
 
         # parse the output
-        premises, conclusion, final_step = parse_proof_step(proof_step)
-        greedy_proof.append((premises, conclusion, final_step))
-        if not final_step:
-            symbol_to_sent_mapping[conclusion[0]] = conclusion[1]
+        valid = True
+        if "->" not in proof_step:
+            valid = False
+        else:
+            premises, conclusion, final_step = parse_proof_step(proof_step)
 
-        # calculate prover scores
-        prover_score = 1
-        for logits in outputs.scores:
-            logits = logits[0]
-            current_score = logits.softmax(dim=0)[logits.argmax()].item()
-            prover_score *= current_score
+            if not all([x in symbol_to_sent_mapping for x in premises]):
+                valid = False
+                    
+            if not final_step:
+                # invalid case: int_x & ... -> int_y (directly copy a int_x to be the result but give a different number)
+                int_premises = list(filter(lambda x: x.startswith("int"), premises))
+                if conclusion[1] in [symbol_to_sent_mapping[x] for x in int_premises]:
+                    valid = False
 
-        # calculate verifier scores
+                # invalid case: output hypothesis as one int result
+                if conclusion[1] == one_task['hypothesis']:
+                    valid = False
+        
+        if valid:
+            greedy_proof.append((premises, conclusion, final_step))
+            if not final_step:
+                symbol_to_sent_mapping[conclusion[0]] = conclusion[1]
+
+            # calculate prover scores
+            prover_score = 1
+            for logits in outputs.scores:
+                logits = logits[0]
+                current_score = logits.softmax(dim=0)[logits.argmax()].item()
+                prover_score *= current_score
+        else:
+            print("invalid step during greedy search")
+            # import pdb
+            # pdb.set_trace()
+            outputs = prover.generate(input_ids, output_scores=True, max_length=128, return_dict_in_generate=True, num_beams=6, num_return_sequences=6, length_penalty=0.0)
+            for i in range(len(outputs.sequences)):
+                proof_step = t5_tokenizer.decode(outputs.sequences[i], skip_special_tokens=True)
+                print("generated proof step:", proof_step)
+                if "->" not in proof_step:
+                    print("invalid proof step: not -> symbol")
+                    continue
+                premises, conclusion, final_step = parse_proof_step(proof_step)
+
+                if not all([x in symbol_to_sent_mapping for x in premises]):
+                    # uses unknown sents or ints
+                    continue
+
+                if not final_step:
+                    if conclusion[1] not in [symbol_to_sent_mapping[x] for x in premises] and conclusion[1] != one_task['hypothesis']:
+                        valid = True
+                        prover_score = math.exp(outputs.sequences_scores[i])
+                        greedy_proof.append((premises, conclusion, final_step))
+                        symbol_to_sent_mapping[conclusion[0]] = conclusion[1]
+                        break
+                else:
+                    valid = True
+                    prover_score = math.exp(outputs.sequences_scores[i])
+                    greedy_proof.append((premises, conclusion, final_step))
+                    assert (conclusion[0] == 'hypothesis')
+                    assert (symbol_to_sent_mapping['hypothesis'] == one_task['hypothesis'])
+                    break
+            if valid == False:
+                print("invalid again")
+                return None, None
+
+        # calculate verifier scores, steps needs to be valid at this point
         premise_sents = ". ".join([symbol_to_sent_mapping[x] for x in premises])
         if final_step:
             conclusion_sent = symbol_to_sent_mapping["hypothesis"]
@@ -466,13 +562,19 @@ def initialize_graph(proof, scores):
 
 
 def eval_task(file_path, prover, verifier):
+    # import pdb
+    # pdb.set_trace()
     with open(file_path, "r") as f:
         with open("result.txt", "w") as w:
             lines = f.readlines()
-            for idx, line in enumerate(lines):
+            for idx, line in tqdm.tqdm(enumerate(lines)):
+                # if idx == 0:
+                    # import pdb
+                    # pdb.set_trace()
                 one_task = json.loads(line)
+                print(f"--------- test {idx} -----------\n")
                 proof_str = proof_search(one_task, prover, verifier)
-                # w.write(f"--------- test {idx} -----------\n")
+                print("")
                 # w.write(f"round truth proof\t\t: {one_task['proof']}\n")
                 # w.write(f"our proof\t\t: {proof_str}\n")
                 w.write(f"$proof$ ={proof_str}\n")
