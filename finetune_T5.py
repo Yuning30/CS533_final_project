@@ -1,13 +1,12 @@
 import preprocess
 import torch
 import tqdm
+import argparse
 
 from transformers import T5Tokenizer, T5ForConditionalGeneration
 from transformers import AdamW, get_cosine_schedule_with_warmup
 
 tokenizer = T5Tokenizer.from_pretrained("t5-large")
-
-path = "entailment_bank/data/public_dataset/entailment_trees_emnlp2021_data_v2/dataset/task_1/"
 
 def collate_fn(batch):
     # import pdb
@@ -20,7 +19,7 @@ def collate_fn(batch):
 
     return input_ids, attention_mask, output_ids
 
-def finetune_T5(model, dataset_train, dataset_validation, batch_size, num_epoches, verbose=True, device='cuda'):
+def finetune_T5(task, model, dataset_train, dataset_validation, batch_size, num_epoches, verbose=True, device='cuda'):
     model = model.to(device)
 
     # set up data loader
@@ -91,12 +90,20 @@ def finetune_T5(model, dataset_train, dataset_validation, batch_size, num_epoche
         # print result for this epoch
         print("Epoch {:3d} | train avg loss {:8.4f} | val avg loss {:8.4f}".format(epoch, loss_average, val_loss_average))
 
-        model.save_pretrained(f"saved_model/T5_large_epoch_{epoch}")
+        model.save_pretrained(f"saved_model/{task}/T5_large_epoch_{epoch}")
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--task', required=True, choices=['task_1', 'task_2'])
+    parser.add_argument('--device', required=True, choices=['cuda:0', 'cuda:1', 'cuda:2', 'cuda:3', 'cuda:4', 'cuda:5'])
+    args = parser.parse_args()
+    print("finetuning for task", args.task)
+    print("using device", args.device)
+
+    path = f"entailment_bank/data/public_dataset/entailment_trees_emnlp2021_data_v2/dataset/{args.task}/"
     model = T5ForConditionalGeneration.from_pretrained('t5-large')
     dataset_train = preprocess.entailment_bank_dataset(path + "train.jsonl")
     dataset_validation = preprocess.entailment_bank_dataset(path + "dev.jsonl")
     
-    finetune_T5(model, dataset_train, dataset_validation, batch_size=4, num_epoches=20, device='cuda')
+    finetune_T5(args.task, model, dataset_train, dataset_validation, batch_size=4, num_epoches=20, device=args.device)
     

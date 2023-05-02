@@ -4,6 +4,7 @@ import json
 import random
 import math
 import sys
+import argparse
 import numpy as np
 from transformers import T5Tokenizer, T5ForConditionalGeneration
 from transformers import RobertaTokenizer, RobertaForSequenceClassification
@@ -12,13 +13,8 @@ from transformers import RobertaTokenizer, RobertaForSequenceClassification
 # sys.setrecursionlimit(5000)
 # print("recursion limit", sys.getrecursionlimit())
 
-random.seed(1)
-path = "entailment_bank/data/public_dataset/entailment_trees_emnlp2021_data_v2/dataset/task_1/"
-
 t5_tokenizer = T5Tokenizer.from_pretrained("t5-large")
 roberta_tokenizer = RobertaTokenizer.from_pretrained("roberta-large")
-
-device = 'cuda:1'
 
 class Node:
     def __init__(self, type_in=None, score_in=None, sent_in=None):
@@ -55,6 +51,8 @@ def proof_search(one_task, prover, verifier):
         scrs = (p_scrs + v_scrs) / 2
 
         print(proof_step_list)
+        print("p score", p_scrs)
+        print("v score", v_scrs)
         print(scrs)
 
         # import pdb
@@ -66,6 +64,8 @@ def proof_search(one_task, prover, verifier):
     return extract_proof(one_task, graph_nodes)
 
 def extract_proof(one_task, graph_nodes):
+    # import pdb
+    # pdb.set_trace()
     # get hypothesis node and all of its predecessors
     print([node.type for node in graph_nodes])
     for node in graph_nodes:
@@ -89,9 +89,11 @@ def extract_proof(one_task, graph_nodes):
                 nodes_to_be_added.append(p_node)
 
     # get the final proof string
-    sent_to_symbol = {}
+    context_sent_to_symbol = {}
     for symbol, sent in one_task["meta"]["triples"].items():
-        sent_to_symbol[sent] = symbol
+        context_sent_to_symbol[sent] = symbol
+
+    int_sent_to_symbol = {} 
 
     proof_str = ""
     int_idx = 1
@@ -99,17 +101,17 @@ def extract_proof(one_task, graph_nodes):
     #pdb.set_trace()
     while len(proof_nodes) > 0:
         for idx, node in enumerate(proof_nodes):
-            premise_sents = [premise_node.sent for premise_node in node.in_bound_edges[0].in_bound_edges]
-            all_exist = all([sent in sent_to_symbol for sent in premise_sents])
+            premise_sents_and_types = [(premise_node.sent, premise_node.type) for premise_node in node.in_bound_edges[0].in_bound_edges]
+            all_exist = all([sent in context_sent_to_symbol if node_type == "C" else sent in int_sent_to_symbol for (sent, node_type) in premise_sents_and_types])
             if all_exist:
                 # convert this step to string
-                premise_symbol = [sent_to_symbol[sent] for sent in premise_sents]
+                premise_symbol = [context_sent_to_symbol[sent] if node_type == "C" else int_sent_to_symbol[sent] for (sent, node_type) in premise_sents_and_types]
                 if node.type == "h":
                     step_str = f" {' & '.join(premise_symbol)} -> hypothesis;"
                 elif node.type == "I":
                     int_x = f"int{int_idx}"
                     step_str = f" {' & '.join(premise_symbol)} -> {int_x}: {node.sent};"
-                    sent_to_symbol[node.sent] = int_x
+                    int_sent_to_symbol[node.sent] = int_x
                     int_idx += 1
                 else:
                     assert False
@@ -240,7 +242,7 @@ def prover_generate(one_task, prover, partial_proof_str, sent_to_symbol_mapping)
     input_ids = t5_tokenizer(input_str, return_tensors="pt").input_ids
     input_ids = input_ids.to(device)
     with torch.no_grad():
-        outputs = prover.generate(input_ids, output_scores=True, max_length=128, return_dict_in_generate=True, num_beams=4, num_return_sequences=2, length_penalty=0.0)
+        outputs = prover.generate(input_ids, output_scores=True, max_length=128, return_dict_in_generate=True, num_beams=10, num_return_sequences=10, length_penalty=0.0)
         # import pdb
         # pdb.set_trace()
 
@@ -453,7 +455,7 @@ def generate_greedy_and_initialize_graph(one_task, prover, verifier):
             print("invalid step during greedy search")
             # import pdb
             # pdb.set_trace()
-            outputs = prover.generate(input_ids, output_scores=True, max_length=128, return_dict_in_generate=True, num_beams=6, num_return_sequences=6, length_penalty=0.0)
+            outputs = prover.generate(input_ids, output_scores=True, max_length=128, return_dict_in_generate=True, num_beams=10, num_return_sequences=10, length_penalty=0.0)
             for i in range(len(outputs.sequences)):
                 proof_step = t5_tokenizer.decode(outputs.sequences[i], skip_special_tokens=True)
                 print("generated proof step:", proof_step)
@@ -561,30 +563,51 @@ def initialize_graph(proof, scores):
 
 
 
-def eval_task(file_path, prover, verifier):
+def eval_task(task, seed, T5_epoch, roberta_epoch, file_path, prover, verifier):
     # import pdb
     # pdb.set_trace()
     with open(file_path, "r") as f:
-        with open("result.txt", "w") as w:
+        with open(f"result_beam_10_{task}_{seed}_{T5_epoch}_{roberta_epoch}.txt", "w") as w:
             lines = f.readlines()
             for idx, line in tqdm.tqdm(enumerate(lines)):
+                if idx is not None:
                 # if idx == 0:
                     # import pdb
                     # pdb.set_trace()
-                one_task = json.loads(line)
-                print(f"--------- test {idx} -----------\n")
-                proof_str = proof_search(one_task, prover, verifier)
-                print("")
-                # w.write(f"round truth proof\t\t: {one_task['proof']}\n")
-                # w.write(f"our proof\t\t: {proof_str}\n")
-                w.write(f"$proof$ ={proof_str}\n")
+                    one_task = json.loads(line)
+                    print(f"--------- test {idx} -----------\n")
+                    try:
+                        proof_str = proof_search(one_task, prover, verifier)
+                    except:
+                        proof_str = ""
+                    print("")
+                    # w.write(f"round truth proof\t\t: {one_task['proof']}\n")
+                    # w.write(f"our proof\t\t: {proof_str}\n")
+                    w.write(f"$proof$ ={proof_str}\n")
             
 
 if __name__ == "__main__":
-    prover = T5ForConditionalGeneration.from_pretrained("./saved_model/T5_large_epoch_2/").to(device)
-    verifier = RobertaForSequenceClassification.from_pretrained("./saved_model/roberta_large_epoch_3/").to(device)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--task', required=True, choices=['task_1', 'task_2'])
+    parser.add_argument('--device', required=True, choices=['cuda:0', 'cuda:1', 'cuda:2', 'cuda:3', 'cuda:4', 'cuda:5'])
+    parser.add_argument('--seed', required=True, type=int)
+    parser.add_argument('--T5_epoch', required=True, type=int)
+    parser.add_argument('--roberta_epoch', required=True, type=int)
+    args = parser.parse_args()
+
+    print("run for task", args.task)
+    print("using device", args.device)
+    print("random seed", args.seed)
+    print("T5 epoch", args.T5_epoch)
+    print("roberta epoch", args.roberta_epoch)
+
+    device = args.device
+    random.seed(args.seed)
+    path = f"entailment_bank/data/public_dataset/entailment_trees_emnlp2021_data_v2/dataset/{args.task}/"
+    prover = T5ForConditionalGeneration.from_pretrained(f"./saved_model/{args.task}/T5_large_epoch_{args.T5_epoch}/").to(device)
+    verifier = RobertaForSequenceClassification.from_pretrained(f"./saved_model/{args.task}/roberta_large_epoch_{args.roberta_epoch}/").to(device)
     
     prover.eval()
     verifier.eval()
 
-    eval_task(path + "test.jsonl", prover, verifier)
+    eval_task(args.task, args.seed, args.T5_epoch, args.roberta_epoch, path + "test.jsonl", prover, verifier)

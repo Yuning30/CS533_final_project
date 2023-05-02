@@ -1,13 +1,12 @@
 import preprocess
 import torch
 import tqdm
+import argparse
 
 from transformers import RobertaTokenizer, RobertaForSequenceClassification
 from transformers import AdamW, get_cosine_schedule_with_warmup
 
 tokenizer = RobertaTokenizer.from_pretrained("roberta-large")
-
-path = "entailment_bank/data/public_dataset/entailment_trees_emnlp2021_data_v2/dataset/task_1/"
 
 def collate_fn(batch):
     premises, conclusion, scores = zip(*batch)
@@ -16,7 +15,7 @@ def collate_fn(batch):
 
     return input_ids, attention_mask, torch.tensor(scores)
 
-def finetune_roberta(model, dataset_train, dataset_validation, batch_size, num_epoches, verbose=True, device='cuda'):
+def finetune_roberta(task, model, dataset_train, dataset_validation, batch_size, num_epoches, verbose=True, device='cuda'):
     model = model.to(device)
 
     # set up data loader
@@ -96,12 +95,20 @@ def finetune_roberta(model, dataset_train, dataset_validation, batch_size, num_e
         # print result for this epoch
         print("Epoch {:3d} | train avg loss {:8.4f} | val avg loss {:8.4f}".format(epoch, loss_average, val_loss_average))
 
-        model.save_pretrained(f"saved_model/roberta_large_epoch_{epoch}")
+        model.save_pretrained(f"saved_model/{task}/roberta_large_epoch_{epoch}")
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--task', required=True, choices=['task_1', 'task_2'])
+    parser.add_argument('--device', required=True, choices=['cuda:0', 'cuda:1', 'cuda:2', 'cuda:3', 'cuda:4', 'cuda:5'])
+    args = parser.parse_args()
+    print("finetune for task", args.task)
+    print("using device", args.device)
+
+    path = f"entailment_bank/data/public_dataset/entailment_trees_emnlp2021_data_v2/dataset/{args.task}/"
     model = RobertaForSequenceClassification.from_pretrained('roberta-large', problem_type='regression', num_labels=1)
     dataset_train = preprocess.roberta_dataset(path + "train.jsonl")
     dataset_validation = preprocess.roberta_dataset(path + "dev.jsonl")
     
-    finetune_roberta(model, dataset_train, dataset_validation, batch_size=32, num_epoches=20, device='cuda')
+    finetune_roberta(args.task, model, dataset_train, dataset_validation, batch_size=32, num_epoches=20, device=args.device)
     
